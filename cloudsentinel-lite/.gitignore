@@ -4,3 +4,12 @@ __pycache__/
 .env
 credentials
 *.zip
+
+
+
+packaged.yaml
+event.json
+out.json
+policy.json
+pattern.json
+sample-event.json
