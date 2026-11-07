@@ -1,0 +1,98 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Description: CloudSentinel-Lite Step 4 - public S3 bucket rule
+
+Parameters:
+  AlertEmail:
+    Type: String
+  DryRun:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  ScopePrefix:
+    Type: String
+    Default: cs-demo-
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  RemediatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: remediator-least-privilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutBucketPublicAccessBlock
+                Resource: !Sub arn:aws:s3:::${ScopePrefix}*
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertTopic
+
+  RemediatorFunction:
+    Type: AWS::Lambda::Function
+    Properties:
+      FunctionName: cloudsentinel-remediator
+      Runtime: python3.12
+      Handler: app.lambda_handler
+      Timeout: 30
+      Role: !GetAtt RemediatorRole.Arn
+      Code: lambdas/remediator/
+      Environment:
+        Variables:
+          DRY_RUN: !Ref DryRun
+          SCOPE_PREFIX: !Ref ScopePrefix
+          TOPIC_ARN: !Ref AlertTopic
+
+  S3RiskRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Risky S3 public access changes v2
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - PutBucketAcl
+            - PutBucketPolicy
+            - DeleteBucketPublicAccessBlock
+            - PutBucketPublicAccessBlock
+      Targets:
+        - Arn: !GetAtt RemediatorFunction.Arn
+          Id: remediator
+
+  AllowEventBridge:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref RemediatorFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3RiskRule.Arn
+
+Outputs:
+  TopicArn:
+    Value: !Ref AlertTopic
