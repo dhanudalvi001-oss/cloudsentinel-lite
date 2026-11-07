@@ -1,5 +1,13 @@
 .venv/
 packaged.yaml
-out.json
+event.json
 ev.json
+out.json
+policy.json
+pattern.json
+sample-event.json
+key.json
 __pycache__/
+*.pem
+.env
+credentials
