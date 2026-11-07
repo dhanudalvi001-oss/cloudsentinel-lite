@@ -1,0 +1,197 @@
+AWSTemplateFormatVersion: '2010-09-09'
+Transform: AWS::Serverless-2016-10-31
+Description: CloudSentinel-Lite Step 4 - public S3 bucket rule (with CloudTrail so API-call events reach EventBridge)
+
+Parameters:
+  AlertEmail:
+    Type: String
+  DryRun:
+    Type: String
+    Default: 'true'
+    AllowedValues:
+      - 'true'
+      - 'false'
+  ScopePrefix:
+    Type: String
+    Default: cs-demo-
+
+Resources:
+  AlertTopic:
+    Type: AWS::SNS::Topic
+    Properties:
+      Subscription:
+        - Protocol: email
+          Endpoint: !Ref AlertEmail
+
+  RemediatorRole:
+    Type: AWS::IAM::Role
+    Properties:
+      AssumeRolePolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service: lambda.amazonaws.com
+            Action: sts:AssumeRole
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole
+      Policies:
+        - PolicyName: remediator-least-privilege
+          PolicyDocument:
+            Version: '2012-10-17'
+            Statement:
+              - Effect: Allow
+                Action:
+                  - s3:GetBucketPublicAccessBlock
+                  - s3:PutBucketPublicAccessBlock
+                Resource: !Sub arn:aws:s3:::${ScopePrefix}*
+              - Effect: Allow
+                Action: sns:Publish
+                Resource: !Ref AlertTopic
+
+  RemediatorFunction:
+    Type: AWS::Serverless::Function
+    Properties:
+      FunctionName: cloudsentinel-remediator
+      Runtime: python3.12
+      Handler: app.lambda_handler
+      Timeout: 30
+      Role: !GetAtt RemediatorRole.Arn
+      CodeUri: lambdas/remediator/
+      Environment:
+        Variables:
+          DRY_RUN: !Ref DryRun
+          SCOPE_PREFIX: !Ref ScopePrefix
+          TOPIC_ARN: !Ref AlertTopic
+
+  S3RiskRule:
+    Type: AWS::Events::Rule
+    Properties:
+      Description: Risky S3 public access changes v2
+      State: ENABLED
+      EventPattern:
+        source:
+          - aws.s3
+        detail-type:
+          - AWS API Call via CloudTrail
+        detail:
+          eventSource:
+            - s3.amazonaws.com
+          eventName:
+            - PutBucketAcl
+            - PutBucketPolicy
+            - DeleteBucketPublicAccessBlock
+            - PutBucketPublicAccessBlock
+      Targets:
+        - Arn: !GetAtt RemediatorFunction.Arn
+          Id: remediator
+
+  AllowEventBridge:
+    Type: AWS::Lambda::Permission
+    Properties:
+      Action: lambda:InvokeFunction
+      FunctionName: !Ref RemediatorFunction
+      Principal: events.amazonaws.com
+      SourceArn: !GetAtt S3RiskRule.Arn
+
+  # --- CloudTrail: required for "AWS API Call via CloudTrail" events to reach EventBridge ---
+  TrailLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTrailLogs
+            Status: Enabled
+            ExpirationInDays: 3
+
+  TrailLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TrailLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt TrailLogBucket.Arn
+          - Sid: Write
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${TrailLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  ManagementTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: TrailLogBucketPolicy
+    Properties:
+      IsLogging: true
+      S3BucketName: !Ref TrailLogBucket
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+
+  # --- CloudTrail: required for "AWS API Call via CloudTrail" events to reach EventBridge ---
+  TrailLogBucket:
+    Type: AWS::S3::Bucket
+    Properties:
+      PublicAccessBlockConfiguration:
+        BlockPublicAcls: true
+        IgnorePublicAcls: true
+        BlockPublicPolicy: true
+        RestrictPublicBuckets: true
+      LifecycleConfiguration:
+        Rules:
+          - Id: ExpireTrailLogs
+            Status: Enabled
+            ExpirationInDays: 3
+
+  TrailLogBucketPolicy:
+    Type: AWS::S3::BucketPolicy
+    Properties:
+      Bucket: !Ref TrailLogBucket
+      PolicyDocument:
+        Version: '2012-10-17'
+        Statement:
+          - Sid: AclCheck
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:GetBucketAcl
+            Resource: !GetAtt TrailLogBucket.Arn
+          - Sid: Write
+            Effect: Allow
+            Principal:
+              Service: cloudtrail.amazonaws.com
+            Action: s3:PutObject
+            Resource: !Sub '${TrailLogBucket.Arn}/AWSLogs/${AWS::AccountId}/*'
+            Condition:
+              StringEquals:
+                s3:x-amz-acl: bucket-owner-full-control
+
+  ManagementTrail:
+    Type: AWS::CloudTrail::Trail
+    DependsOn: TrailLogBucketPolicy
+    Properties:
+      IsLogging: true
+      S3BucketName: !Ref TrailLogBucket
+      IsMultiRegionTrail: false
+      IncludeGlobalServiceEvents: false
+Outputs:
+  TopicArn:
+    Value: !Ref AlertTopic
+  TrailName:
+    Value: !Ref ManagementTrail
+  TrailName:
+    Value: !Ref ManagementTrail
+
